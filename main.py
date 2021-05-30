@@ -222,13 +222,14 @@ class cryptoAssetResearch:
         self.interval = interval
 
 
+
 keys = read_jsonFile('api_keys.txt')
 tickers = read_jsonFile('futures_tickers.txt')
 client = Client(keys[0], keys[1])
 
 
 # %%
-df = historical_klines(client,'BTCUSDT','12h')
+df = historical_klines(client,'BTCUSDT','1d')
 
 # %%
 clas = movingAverageCrossover(df.Close, 100, 3, False, 'binary', .0005)
@@ -249,7 +250,7 @@ ax = plt.axes(projection='3d')
 
 ax.scatter3D(l[:,0],l[:,1], l[:,2], c=l[:,2], cmap = cm.coolwarm);
 
-ax.view_init(90, 90);
+ax.view_init(90, 0);
 
 
 # %%
@@ -259,4 +260,52 @@ ax2.scatter(l[:,0], l[:,1], c = l[:,2])
 
 # %%
 
+# %%
+def optimise_ma_crossover(min_long = 20, max_long = 120):
+    
+    print("Running backtests...\n")
+    l = []
+    for i in range(20, 120):
+        for j in range(3, int(i*3/4)):
+            l.append([i, j, movingAverageCrossover(df.Close, i, j, False, 'binary', .0005).strategy_evaluation().loc['Sharpe'][0]])
+    l = np.array(l)
+
+    print("Creating optimisation dataframe...\n")
+    index = []
+    for i in range(len(l)):
+        index.append([l[i][0], l[i][1]])
+
+    index = pd.MultiIndex.from_frame(
+        pd.DataFrame(index, columns = ['Long', 'Short'])
+    )
+    
+    df = pd.DataFrame(
+        l,
+        index = index
+    )
+    df = pd.DataFrame(df[2])
+    df.columns = ['Sharpe']
+
+    print("Optimising parameters...\n")
+
+    for i in range(min_long + 5, max_long - 5)
+
+
+for i in range(len(l)):
+    liste.append([l[i][0], l[i][1]])
+#liste = [liste]
+
+df_l = pd.DataFrame(liste, columns=['Long', 'Short'])
+# %%
+# %%
+
+df_opt = pd.DataFrame(l, index = pd.MultiIndex.from_frame(df_l))
+df_opt = pd.DataFrame(df_opt[2])
+df_opt.columns = ['Sharpe']
+# %%
+df_opt.loc[(120.0)]
+# %%
+len(df_opt)
+# %%
+df_opt.T.sort_values(by = 'Sharpe', ascending = False)
 # %%
