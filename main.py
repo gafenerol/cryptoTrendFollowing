@@ -1,11 +1,11 @@
 # %%
 import os
-from numpy.lib.stride_tricks import _sliding_window_view_dispatcher
 import pandas as pd
 import numpy as np 
 from json import load
 from binance import Client
 import matplotlib.pyplot as plt
+from numba import jit
 
 ###########################################################################################
 ###                                FILE MANIPULATION                                    ###
@@ -86,7 +86,6 @@ def SMA(df, n = 20):
 def annualising_factor(series):
     return round(365 / ((np.diff(df.index.values).mean().astype(float) * 1e-9)/(24*3600)))
 
-
 class movingAverageCrossover:
 
     def __init__(self, prices, long, short, use_ema, weighting_scheme, tcost):
@@ -107,7 +106,6 @@ class movingAverageCrossover:
         self.bh_disc_returns = returns['Buy and Hold']
         self.bh_log_returns = np.log(1+returns['Buy and Hold'])
         
-
     def ma_crossover_signals(self):
         df = pd.DataFrame(self.prices)
 
@@ -142,35 +140,35 @@ class movingAverageCrossover:
 
     def strategy_evaluation(self):
         perf = [
-            performance(self.strategy_disc_returns),
-            performance(self.bh_disc_returns)
+            performance(self.strategy_disc_returns.values),
+            performance(self.bh_disc_returns.values)
             ]
         cagr = [
-            CAGR(self.strategy_log_returns, self.ann_factor),
-            CAGR(self.bh_log_returns, self.ann_factor)
+            CAGR(self.strategy_log_returns.values, self.ann_factor),
+            CAGR(self.bh_log_returns.values, self.ann_factor)
         ]
         real_vol = [
-            realised_volatility(self.strategy_log_returns, self.ann_factor),
-            realised_volatility(self.bh_log_returns, self.ann_factor)
+            realised_volatility(self.strategy_log_returns.values, self.ann_factor),
+            realised_volatility(self.bh_log_returns.values, self.ann_factor)
         ]
         sharpe_ratio = [
-            sharpe(self.strategy_log_returns, self.risk_free, self.ann_factor),
-            sharpe(self.bh_log_returns, self.risk_free, self.ann_factor)
+            sharpe(self.strategy_log_returns.values, self.risk_free, self.ann_factor),
+            sharpe(self.bh_log_returns.values, self.risk_free, self.ann_factor)
         ]
         down_vol = [
-            downside_volatility(self.strategy_log_returns, self.ann_factor),
-            downside_volatility(self.bh_log_returns, self.ann_factor)          
+            downside_volatility(self.strategy_log_returns.values, self.ann_factor),
+            downside_volatility(self.bh_log_returns.values, self.ann_factor)          
         ]
         sortino_ratio = [
-            sortino(self.strategy_log_returns, self.risk_free, self.ann_factor),
-            sortino(self.bh_log_returns, self.risk_free, self.ann_factor)              
+            sortino(self.strategy_log_returns.values, self.risk_free, self.ann_factor),
+            sortino(self.bh_log_returns.values, self.risk_free, self.ann_factor)              
         ]
         max_dd = [
             max_drawdown(self.strategy_disc_returns),
             max_drawdown(self.bh_disc_returns)
         ]
         calmar_ratio = [
-            calmar(self.strategy_disc_returns, self.strategy_log_returns, self.risk_free, self.ann_factor),
+            calmar(self.strategy_disc_returns, self.strategy_log_returns.values, self.risk_free, self.ann_factor),
             calmar(self.bh_disc_returns, self.bh_log_returns, self.risk_free, self.ann_factor)
         ]
         tcost = [
@@ -221,56 +219,52 @@ class cryptoAssetResearch:
         self.ticker = symbol + 'USDT'
         self.interval = interval
 
+def riskreward_strategy(df, long, short, long_parameter, short_parameter):
+    """
+    Returns the average risk/reward ratio for several close parameters of a strategy.
+    Parameters:
+        df: optimisation df
+        long: long MA index
+        short: short MA index
+        long_parameter: smoothing factor for long MA
+        short_parameter: smoothing factor for short MA
+    """
+    df = df.T
+    long_columns = list(range(long-long_parameter, long+long_parameter+1))
+    short_columns = list(range(short-short_parameter, short+short_parameter+1))
 
+    mean = []
+    try:
+        for l in long_columns:
+            for s in short_columns:
+                mean.append(df[l][s])
+        result = np.mean(np.array(mean))
+    except:
+        result = np.nan
+    return result
 
-keys = read_jsonFile('api_keys.txt')
-tickers = read_jsonFile('futures_tickers.txt')
-client = Client(keys[0], keys[1])
-
-
-# %%
-df = historical_klines(client,'BTCUSDT','1d')
-
-# %%
-clas = movingAverageCrossover(df.Close, 100, 3, False, 'binary', .0005)
-print(clas.strategy_evaluation())
-clas.plot()
- # %%
-
-l = []
-for i in range(20, 120):
-    for j in range(3, int(i*3/4)):
-        l.append([i, j, movingAverageCrossover(df.Close, i, j, False, 'binary', .0005).strategy_evaluation().loc['Sharpe'][0]])
-l = np.array(l)
-# %%
-from matplotlib import cm
-
-fig =  plt.figure()
-ax = plt.axes(projection='3d')
-
-ax.scatter3D(l[:,0],l[:,1], l[:,2], c=l[:,2], cmap = cm.coolwarm);
-
-ax.view_init(90, 0);
-
-
-# %%
-fig2, ax2 = plt.subplots()
-
-ax2.scatter(l[:,0], l[:,1], c = l[:,2])
-
-# %%
-
-# %%
-def optimise_ma_crossover(min_long = 20, max_long = 120):
-    
+def optimise_ma_crossover(prices, min_long = 20, max_long = 120, long_parameter = 5, short_parameter = 3):
+    """
+    Optimises MA crossover strategy on a set of prices.
+    Parameters:
+        prices: asset prices
+        min_long: minimum lookback period for the long MA
+        max_long: maximum lookback period for the long MA
+        long_parameter: Sharpe smoothing parameter for long MA (for n, averages Sharpe for [n-param;n+param])
+        short_parameter: Sharpe smoothing parameter for short MA
+    """
     print("Running backtests...\n")
+    t = time.perf_counter()
     l = []
-    for i in range(20, 120):
+    for i in range(min_long, max_long): # Computes backtests for the given range
         for j in range(3, int(i*3/4)):
-            l.append([i, j, movingAverageCrossover(df.Close, i, j, False, 'binary', .0005).strategy_evaluation().loc['Sharpe'][0]])
+            l.append([i, j, movingAverageCrossover(prices, i, j, False, 'binary', .0005).strategy_evaluation().loc['Sharpe'][0]])
     l = np.array(l)
+    print(f"Execution time: {time.perf_counter() - t:0.4f} seconds")
 
-    print("Creating optimisation dataframe...\n")
+    pass
+
+    print("Creating optimisation dataframe...\n")   # Creates Pandas MultiIndex dataframe
     index = []
     for i in range(len(l)):
         index.append([l[i][0], l[i][1]])
@@ -286,26 +280,70 @@ def optimise_ma_crossover(min_long = 20, max_long = 120):
     df = pd.DataFrame(df[2])
     df.columns = ['Sharpe']
 
+    # Optimises parameters by averaging Sharpe around a backtest, aims to reduce overfitting
     print("Optimising parameters...\n")
+    opt = []
 
-    for i in range(min_long + 5, max_long - 5)
+    for idx in df.index:
+        i = int(idx[0])
+        j = int(idx[1])
+        
+        opt.append(riskreward_strategy(df, i, j, long_parameter, short_parameter))
+        
+    opt = pd.Series(opt, index = df.index, name = 'Optimisation')
+    return df.join(opt) 
+
+public = os.getenv('BINANCE_PUBLIC')
+secret = os.getenv('BINANCE_SECRET')
+tickers = read_jsonFile('futures_tickers.txt')
+client = Client(public, secret)
 
 
-for i in range(len(l)):
-    liste.append([l[i][0], l[i][1]])
-#liste = [liste]
+# %%
+df = historical_klines(client,'BTCUSDT','1d')
+df.to_csv('data_test.csv')
+# %%
+classe = movingAverageCrossover(df.Close[:'2021-03'], 48, 34, False, 'binary', .005)
 
-df_l = pd.DataFrame(liste, columns=['Long', 'Short'])
 # %%
-# %%
+import time
+t = time.perf_counter()
 
-df_opt = pd.DataFrame(l, index = pd.MultiIndex.from_frame(df_l))
-df_opt = pd.DataFrame(df_opt[2])
-df_opt.columns = ['Sharpe']
+sharpes = []
+classe = None
+for l in range(20,31):
+    for s in range(3, int(l * 3/4)):
+        try:
+            classe.n_long = l
+            classe.n_short = s
+            classe.__init__()
+            sharpes.append(classe.strategy_evaluation().loc['Sharpe'][0])
+        except:
+            classe = movingAverageCrossover(df.Close[:'2021-03'], l, s, False, 'binary', .005)
+            sharpes.append(classe.strategy_evaluation().loc['Sharpe'][0])
+
+print(f"Execution time: {time.perf_counter() - t:0.4f} seconds")
 # %%
-df_opt.loc[(120.0)]
+def test_func(l,s):
+    try:
+        classe.n_long = l
+        classe.n_short = s
+        classe.__init__()
+        #sharpes.append(classe.strategy_evaluation().loc['Sharpe'][0])
+    except:
+        classe = movingAverageCrossover(df.Close[:'2021-03'], l, s, False, 'binary', .005)
+        #sharpes.append(classe.strategy_evaluation().loc['Sharpe'][0])
+    return classe.strategy_evaluation().loc['Sharpe'][0]
 # %%
-len(df_opt)
+import time
+t = time.perf_counter()
+
+
+sharpes2 = np.array([test_func(l,s) for l in range(20,31) for s in range(3, int(l * 3/4))])
+
+print(f"Execution time: {time.perf_counter() - t:0.4f} seconds")
+
 # %%
-df_opt.T.sort_values(by = 'Sharpe', ascending = False)
+sharpes == sharpes2
+# %%
 # %%
