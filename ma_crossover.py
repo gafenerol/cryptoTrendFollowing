@@ -65,6 +65,11 @@ def generate_signals(long, short, method = 'binary', allow_short = True):
 def target_volatility(signals, vol, target = .20):
     return target / vol * signals
 
+def calculate_tcosts(weights, tcosts):
+    tcosts_array = np.abs(weights - np.roll(weights, 1)) * tcosts
+    tcosts_array[0] = np.abs(weights[0]) * tcosts
+    return  tcosts_array
+
 def strategy_logreturns(**inputs):
     returns = np.log(inputs['prices']) - np.roll(np.log(inputs['prices']), 1)
 
@@ -86,8 +91,10 @@ def strategy_logreturns(**inputs):
     ), 
 shift = 1)
 
-    return weights * returns[inputs['long']['n']-1:]
+    return weights * returns[inputs['long']['n']-1:] - calculate_tcosts(weights, inputs['tcosts']), weights, calculate_tcosts(weights, inputs['tcosts'])
 
+
+        
 # %%
 def backtests(**inputs):
     bt = []
