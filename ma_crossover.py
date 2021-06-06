@@ -2,8 +2,8 @@
 import pandas as pd
 import numpy as np
 import performance_measures as pm
-import matplotlib.pyplot as plt
 import copy
+from scipy.stats import ttest_1samp
 
 def moving_average_convolve(x, n):
     """
@@ -16,7 +16,9 @@ def moving_average_convolve(x, n):
     return np.convolve(x, np.ones((n,))/n, mode = 'valid')
 
 def exponential_moving_average(x, n):
-    pass
+    alpha = 2/(n+1)
+    ema = alpha * x + (1-alpha) * np.roll(x,1)
+
 def adjust_array(x, n):
     """
     Adjusts array to erase the (n-1) first rows.
@@ -30,7 +32,6 @@ def rolling_window(a, window):
     try:
         shape = a.shape[:-1] + (a.shape[-1] - window + 1, window)
         strides = a.strides + (a.strides[-1],)
-    
     except:
         return rolling_window(np.array(a), window)
     return np.lib.stride_tricks.as_strided(a, shape=shape, strides=strides)
@@ -53,10 +54,10 @@ def generate_signals(long, short, method = 'binary', allow_short = True):
     Generates signals
     """
     try:
-        if method == 'binary':
+        if method == 'binary':  # Binary payoffs
             return np.where(short > long, 1, -1) if allow_short == True else np.where(short > long, 1, 0)
 
-    except ValueError:
+    except ValueError:  # Adjusts array and recals function if error
         return generate_signals(long, adjust_array(short, len(short) - len(long)+1), method = method, allow_short = allow_short)
 
     else:
@@ -66,13 +67,22 @@ def target_volatility(signals, vol, target = .20):
     return target / vol * signals
 
 def calculate_tcosts(weights, tcosts):
+    """
+    Generates an array including transaction costs
+    """
     tcosts_array = np.abs(weights - np.roll(weights, 1)) * tcosts
     tcosts_array[0] = np.abs(weights[0]) * tcosts
     return  tcosts_array
 
 def strategy_logreturns(**inputs):
+    """
+    Given a dictionary of inputs, returns the log returns of the MA Crossover strategy.
+    See benchmark_dicitonary() for inputs
+    """
+    # Computes prices log returns
     returns = np.log(inputs['prices']) - np.roll(np.log(inputs['prices']), 1)
 
+    # Computes shifted weights using the volatility control method
     weights = np.roll(
         target_volatility(
             generate_signals(
@@ -91,15 +101,16 @@ def strategy_logreturns(**inputs):
     ), 
 shift = 1)
 
-    return weights * returns[inputs['long']['n']-1:] - calculate_tcosts(weights, inputs['tcosts']), weights, calculate_tcosts(weights, inputs['tcosts'])
+    return weights * returns[inputs['long']['n']-1:] - calculate_tcosts(weights, inputs['tcosts'])
 
 
-        
-# %%
-def backtests(**inputs):
+def backtests(max_long_ma = 205, short_ma_ratio = .75, **inputs, ):
+    """
+    Runs severals strategy backtests. Step for long MA is 5, step for short MA is 3.
+    """
     bt = []
-    for i in range(15, 400,5):
-        for j in range(4, int(i*0.75), 3):
+    for i in range(15, max_long_ma,5):
+        for j in range(4, int(i*short_ma_ratio), 3):
             inputs['long']['n'] = i
             inputs['short']['n'] = j
 
@@ -111,21 +122,25 @@ def backtests(**inputs):
                 annualising_factor = inputs['annualising_factor']
                 ),
                 i,
-                j,
-                len(logreturns)
-                ]
+                j]
             )
 
     return np.array(bt)
 
 def get_parameters(bt, i):
+    """
+    Returns the i-th best combination of the backtests function result.
+    """
     sorts = sorted(bt[:,0], reverse = True)
     index = np.where(bt == sorts[i])[0].astype(int)
     return bt[index,:][0]
 
 
-def assess_parameters(params, **inputs):
-    i, j, n = params[1:]
+def preassess_parameters(params, **inputs):
+    """
+    Assesses a strategy by computing logreturns of a strategy around given parameters.
+    """
+    i, j = params[1:]
 
     inputs['long']['n'] = int(i)
     inputs['short']['n'] = int(j)
@@ -150,62 +165,39 @@ def assess_parameters(params, **inputs):
                 annualising_factor = inputs_neg['annualising_factor']),
                 ])
 
-    return np.array(assessment)
-# %%
+    assessment = np.array(assessment)
+    return np.append(assessment[:,0], assessment[:,1])
 
-df = pd.read_csv('data_test.csv', index_col = 0)
-d = {
-        'prices': df.Close[:'2020'],
+def optimise_ma_crossover(**inputs):
+    results = backtests(**inputs)
+    params = []
+    for i in range(len(results)):
+        params = get_parameters(results, i+1)
+        preassessment = preassess_parameters(params, **inputs)
+        stat = ttest_1samp(preassessment, params[0])
+        if stat[1] > .2:
+            return params
+
+        if i == 9:
+            print("Could not find a solution")
+            break
+        
+
+def benchmark_dictionary():
+    d = {
+        'prices': 'data',
         'long': {'n': 60, 'ma_calculation': moving_average_convolve},
         'short': {'n': 20, 'ma_calculation': moving_average_convolve},
-        'annualising_factor': 365*24,
+        'annualising_factor': 365,
         'vol_target': .45,
         'method': 'binary',
         'allow_short': True,
-        'optimisation_parameter': pm.sharpe
+        'optimisation_parameter': pm.sharpe,
+        'tcosts': .05/100
     }
-    
 
-print('Running backtests...')    
-results = backtests(**d)
-print('Backtests done!')
-
-for i in range(5):
-    params = get_parameters(results, i+1)
-    print(params)
-    print(np.std(assess_parameters(params, **d)))
+    return d
 
 # %%
-d = {
-        'prices': df.Close['2021':],
-        'long': {'n': 260, 'ma_calculation': moving_average_convolve},
-        'short': {'n': 190, 'ma_calculation': moving_average_convolve},
-        'annualising_factor': 365*24,
-        'vol_target': .45,
-        'method': 'binary',
-        'allow_short': False,
-        'optimisation_parameter': pm.sharpe
-    }
-plt.plot(
-    np.array(np.exp(np.cumsum(strategy_logreturns(**d))))
-)
-# %%
-def add(a,b):
-    return a + b
-
-def substract(a,b):
-    return a - b
-
-def funcdic(**t):
-    return t['func'](t['a'], t['b'])
-
-t = {
-    'func': add,
-    'a': 10,
-    'b': 5
-}
-
-funcdic(**t)
-# %%
-list(range(15,121,5))
+optimise_ma_crossover(**d)
 # %%
